@@ -27,13 +27,20 @@ if __name__ == '__main__':
     # Initialize language base
     language_base = LanguageBase(params.language_base_dir)
 
-    chatbot = Chatbot(params, language_base, session)
-
     session.run(tf.global_variables_initializer())
 
     # Ingest data into language base
     language_base.ingest(ingestion_data, session, batch_size=50)
-    chatbot.update_decoder(language_base, session)
+
+    chatbot = Chatbot(params, language_base, session)
+
+    session.run(tf.variables_initializer([x for x in tf.global_variables() if x not in [language_base.embeddings,
+                                                                                        language_base.nce_weights,
+                                                                                        language_base.nce_biases]]))
+
+    # # Ingest data into language base
+    # language_base.ingest(ingestion_data, session, batch_size=50)
+    # chatbot.update_decoder(language_base, session)
 
 
     # Create data generator

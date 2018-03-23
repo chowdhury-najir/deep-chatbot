@@ -15,9 +15,11 @@ class Chatbot(object):
         self.params = params
         self.saver = tf.train.Saver()
 
-        with tf.variable_scope("chat", reuse=tf.AUTO_REUSE):
+        with tf.variable_scope("root"):
             self.train_model = ChatModel(params, tf.contrib.learn.ModeKeys.TRAIN, language_base, sess)
+        with tf.variable_scope('root', reuse=True):
             self.eval_model = ChatModel(params, tf.contrib.learn.ModeKeys.EVAL, language_base, sess)
+        with tf.variable_scope('root', reuse=True):
             self.infer_model = ChatModel(params, tf.contrib.learn.ModeKeys.INFER, language_base, sess)
 
     def train(self, train_data_generator, language_base, sess):
@@ -60,16 +62,17 @@ class Chatbot(object):
                         print("    tgt:", tgt_text)
                         print("    predicted:", predicted_text)
 
-                        saver.save(sess, './model')
+                        self.saver.save(sess, './model')
 
                 except StopIteration:
                     break
 
     def update_decoder(self, language_base, sess):
 
-        self.train_model._update_decoder(language_base, sess, self.params)
-        self.eval_model._update_decoder(language_base, sess, self.params)
-        self.infer_model._update_decoder(language_base, sess, self.params)
+        with tf.variable_scope('root', reuse=True):
+            # self.train_model._update_decoder(language_base, sess, self.params)
+            # self.eval_model._update_decoder(language_base, sess, self.params)
+            self.infer_model._update_decoder(language_base, sess, self.params)
 
 
 class ChatModel(object):
@@ -220,13 +223,15 @@ class ChatModel(object):
                 decoder_emb_inp, self.decoder_input_lengths,
                 time_major=True)
 
-            decoder = tf.contrib.seq2seq.BasicDecoder(
-                self.decoder_cell, helper, decoder_initial_state)
+            self.decoder = tf.contrib.seq2seq.BasicDecoder(
+                self.decoder_cell, helper, decoder_initial_state,
+                output_layer=self.output_layer)
 
-            self.outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, output_time_major=True)
+            outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(self.decoder, output_time_major=True)
 
-            logits = self.output_layer(self.outputs.rnn_output)
-            sample_id = self.outputs.sample_id
+            # logits = self.output_layer(self.outputs.rnn_output)
+            logits = outputs.rnn_output
+            sample_id = outputs.sample_id
 
         return logits, sample_id
 
@@ -320,6 +325,17 @@ class ChatModel(object):
 
         if self.mode == tf.contrib.learn.ModeKeys.INFER:
 
+            # output_kernel = tf.get_variable('decoder/output_projection/kernel', validate_shape=False)
+            # new_shape = len(language_base.vocabulary) - int(output_kernel.shape[1])
+            # # print(output_kernel.shape[0])
+            # assign_op = tf.assign(output_kernel,
+            #                       tf.concat([output_kernel, tf.random_uniform([int(output_kernel.shape[0]), new_shape], -1.0, 1.0)], 1),
+            #                       validate_shape=False)
+            #
+            # sess.run([assign_op])
+            #
+            # print(output_kernel)
+
             tmp_embeddings = tf.identity(language_base.embeddings)
             tmp_embeddings.set_shape([len(language_base.vocabulary), language_base.word_embedding_size])
 
@@ -342,8 +358,12 @@ class ChatModel(object):
 
         else:
 
-            logits = self.output_layer(self.outputs.rnn_output)
-            self.translations = self.outputs.sample_id
+            self.decoder.output_layer = self.output_layer
+
+            outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(self.decoder, output_time_major=True)
+
+            logits = outputs.rnn_output
+            self.translations = outputs.sample_id
 
             self.predict_count = tf.reduce_sum(self.decoder_input_lengths)
             self.loss = self._compute_loss(logits, params)
