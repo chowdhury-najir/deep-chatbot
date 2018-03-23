@@ -89,5 +89,7 @@ def convert_to_time_major(inputs, max_len):
 def words_to_text(words):
 
     for i in range(len(words)):
-        if words[i] == '<pad>':
+        if words[i] == '</s>' or words[i] == '<pad>':
             return ' '.join(words[:i])
+
+    return ' '.join(words)

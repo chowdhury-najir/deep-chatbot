@@ -14,20 +14,18 @@ class LanguageBase(object):
     def __init__(self,
                  directory,
                  word_embedding_size=300,
-                 learning_rate=1.0,
-                 session=None):
+                 learning_rate=1.0):
 
         self.directory = directory
         self.word_embedding_size = word_embedding_size
         self.learning_rate = learning_rate
 
-        self.session = session
-        if self.session is None:
-            self.session = tf.InteractiveSession()
-
         self.vocabulary = {'<pad>': 0, '<s>': 1, '</s>': 2}
         self.reversed_vocabulary = ['<pad>', '<s>', '</s>']
         self.weighted_word_multiplier = TfidfVectorizer(tokenizer=word_tokenize)
+
+        self.sos_id = self.vocabulary['<s>']
+        self.eos_id = self.vocabulary['</s>']
 
         self.embeddings = tf.Variable(tf.random_uniform([len(self.vocabulary), self.word_embedding_size], -1.0, 1.0),
                                       name='embeddings', validate_shape=False)
@@ -57,7 +55,7 @@ class LanguageBase(object):
 
         return word_tuples
 
-    def update_vocabulary(self, words):
+    def update_vocabulary(self, words, sess):
 
         new_words = 0
         for word in words:
@@ -76,7 +74,7 @@ class LanguageBase(object):
                                   tf.concat([self.nce_biases, tf.zeros([new_words])], 0),
                                   validate_shape=False)
 
-        self.session.run([embeddings_op, nce_weights_op, nce_biases_op])
+        sess.run([embeddings_op, nce_weights_op, nce_biases_op])
 
     def __save_word_embeddings_metadata(self):
 
@@ -114,14 +112,14 @@ class LanguageBase(object):
 
         return np.array(np.mean(word_vectors, axis=0))
 
-    def get_word_vectors(self, text, use_weights=False):
+    def get_word_vectors(self, text, sess, use_weights=False):
 
         word_vectors = []
 
         words = word_tokenize(text.lower())
 
         for w in words:
-            word_vectors.append(tf.nn.embedding_lookup(self.embeddings, self.vocabulary[w]).eval(session=self.session))
+            word_vectors.append(tf.nn.embedding_lookup(self.embeddings, self.vocabulary[w]).eval(session=sess))
 
         if use_weights:
             word_weights = dict(zip(self.weighted_word_multiplier.get_feature_names(), self.weighted_word_multiplier.idf_))
@@ -132,7 +130,7 @@ class LanguageBase(object):
         return word_vectors
 
     @staticmethod
-    def load(directory):
+    def load(directory, sess):
 
         tf.reset_default_graph()
 
@@ -144,22 +142,20 @@ class LanguageBase(object):
         obj.nce_biases = tf.get_variable('nce_biases', shape=(len(obj.vocabulary),))
 
         saver = tf.train.Saver()
-        obj.session = tf.InteractiveSession()
-        saver.restore(obj.session, os.path.join(directory, 'model.ckpt'))
+        saver.restore(sess, os.path.join(directory, 'model.ckpt'))
 
         return obj
 
-    def __save_session(self):
+    def __save_session(self, sess):
 
         saver = tf.train.Saver()
-        saver.save(self.session, os.path.join(self.directory, 'model.ckpt'))
+        saver.save(sess, os.path.join(self.directory, 'model.ckpt'))
 
-    def save(self):
+    def save(self, sess):
 
         self.__update_embedding_projector()
-        self.__save_session()
+        self.__save_session(sess)
 
-        self.session = None
         self.embeddings = None
         self.nce_weights = None
         self.nce_biases = None
@@ -169,6 +165,7 @@ class LanguageBase(object):
 
     def ingest(self,
                documents,
+               sess,
                num_sampled=64,
                batch_size=10,
                n_iter=1,
@@ -190,7 +187,7 @@ class LanguageBase(object):
         word_tuples = LanguageBase.__create_features(documents, context_window_size)
 
         words = [x[0] for x in word_tuples] + [x[1] for x in word_tuples]
-        self.update_vocabulary(words)
+        self.update_vocabulary(words, sess)
 
         train_inputs = tf.placeholder(tf.int32, shape=[batch_size])
         train_labels = tf.placeholder(tf.int32, shape=[batch_size, 1])
@@ -227,7 +224,7 @@ class LanguageBase(object):
                     train_inputs: inputs,
                     train_labels: labels
                 }
-                _, cur_loss = self.session.run([optimizer, loss], feed_dict=feed_dict)
+                _, cur_loss = sess.run([optimizer, loss], feed_dict=feed_dict)
                 _loss = cur_loss
                 step += batch_size
                 if steps_per_projection_update is not None:
@@ -237,13 +234,13 @@ class LanguageBase(object):
                 if steps_per_checkpoint is not None:
                     for i in range(prev_step, step):
                         if i % steps_per_checkpoint == 0 and i != 0:
-                            self.__save_session()
+                            self.__save_session(sess)
                             if verbose:
                                 print('step: {}, loss: {}, time: {}'.format(i, cur_loss, time.time() - start_time))
                 prev_step = step
 
             self.__update_embedding_projector()
-            self.__save_session()
+            self.__save_session(sess)
 
             if verbose:
                 print('end of epoch. step: {}, loss: {}, time: {}'.format(step, _loss, time.time() - start_time))

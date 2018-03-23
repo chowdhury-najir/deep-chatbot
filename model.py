@@ -13,48 +13,63 @@ class Chatbot(object):
     def __init__(self, params, language_base, sess):
 
         self.params = params
-        self.sess = sess
+        self.saver = tf.train.Saver()
 
-        self.train_model = ChatModel(params, tf.contrib.learn.ModeKeys.TRAIN, language_base, sess)
-        # self.eval_model = ChatModel(params, tf.contrib.learn.ModeKeys.EVAL, language_base, sess)
-        # self.infer_model = ChatModel(params, tf.contrib.learn.ModeKeys.INFER, language_base, sess)
+        with tf.variable_scope("chat", reuse=tf.AUTO_REUSE):
+            self.train_model = ChatModel(params, tf.contrib.learn.ModeKeys.TRAIN, language_base, sess)
+            self.eval_model = ChatModel(params, tf.contrib.learn.ModeKeys.EVAL, language_base, sess)
+            self.infer_model = ChatModel(params, tf.contrib.learn.ModeKeys.INFER, language_base, sess)
 
-    def train(self, train_data_generator, sess):
+    def train(self, train_data_generator, language_base, sess):
 
         global_step = 0
-        start_time = time.time()
+        loss_track = []
+
+        # dev_ppl = self.eval_model.compute_perplexity(train_data_generator, self.params.batch_size, sess)
+        # test_ppl = self.eval_model.compute_perplexity(train_data_generator, self.params.batch_size, sess)
 
         print("# First evaluation, global step 0")
+        # print("  eval dev: perplexity {0:.2f}".format(dev_ppl))
+        # print("  eval test: perplexity {0:.2f}".format(test_ppl))
 
-        dev_ppl = self.eval_model.compute_perplexity(train_data_generator, self.params.batch_size, sess)
+        start_time = time.time()
 
-        print("  eval dev: perplexity {0:.2f} time {0:.2f}".format(dev_ppl, time.time() - start_time))
+        for i in range(self.params.n_epochs):
+            print("# Start epoch {}, step {}".format(i+1, global_step))
+            train_data_generator, epoch_train_generator = itertools.tee(train_data_generator)
+            while True:
+                try:
+                    batch_data = next(epoch_train_generator)
+                    _, loss = self.train_model.train(batch_data, sess)
+                    global_step += self.params.batch_size
+                    loss_track.append(loss)
+                    if global_step % self.params.steps_per_log == 0:
+                        print('  epoch {0} step {1} loss {2:.2f} time {3:.2f}'.format(i+1, global_step, loss, time.time() - start_time))
+                    if global_step % self.params.steps_per_checkpoint == 0:
+                        translations = self.infer_model.infer(batch_data, sess)
 
-        # for i in range(self.params.n_epochs):
-        #
-        #     train_data_generator, epoch_train_generator = itertools.tee(train_data_generator)
-        #
-        #     while True:
-        #         try:
-        #
-        #             batch_data = next(epoch_train_generator)
-        #
-        #             _, loss = self.sess.run([self.train_model.update_step, self.train_model.loss], feed_dict={
-        #                 self.train_model.encoder_inputs: batch_data[0],
-        #                 self.train_model.encoder_input_lengths: batch_data[3],
-        #                 self.train_model.decoder_inputs: batch_data[1],
-        #                 self.train_model.decoder_input_lengths: batch_data[4],
-        #                 self.train_model.decoder_outputs: batch_data[2],
-        #             })
-        #
-        #             global_step += self.params.batch_size
-        #             # loss_track.append(loss)
-        #
-        #             if global_step % self.params.steps_per_log == 0:
-        #                 print('epoch: {}, step: {}, loss: {}, time: {}'.format(i+1, global_step, loss, time.time() - start_time))
-        #
-        #         except StopIteration:
-        #             break
+                        batched_encoder_inputs = data_utils.convert_to_batch_major(batch_data[0])
+                        batched_decoder_outputs = data_utils.convert_to_batch_major(batch_data[2])
+
+                        src_text = data_utils.words_to_text([language_base.reversed_vocabulary[w] for w in batched_encoder_inputs[0]])
+                        tgt_text = data_utils.words_to_text([language_base.reversed_vocabulary[w] for w in batched_decoder_outputs[0]])
+                        predicted_text = data_utils.words_to_text([language_base.reversed_vocabulary[w] for w in translations[0][0][0]])
+
+                        print("  checkpoint eval")
+                        print("    src:", src_text)
+                        print("    tgt:", tgt_text)
+                        print("    predicted:", predicted_text)
+
+                        saver.save(sess, './model')
+
+                except StopIteration:
+                    break
+
+    def update_decoder(self, language_base, sess):
+
+        self.train_model._update_decoder(language_base, sess, self.params)
+        self.eval_model._update_decoder(language_base, sess, self.params)
+        self.infer_model._update_decoder(language_base, sess, self.params)
 
 
 class ChatModel(object):
@@ -88,13 +103,10 @@ class ChatModel(object):
         # Build encoder
         encoder_outputs, encoder_state = self._build_bidirectional_encoder(encoder_emb_inp, params)
 
-        sos_id = language_base.vocabulary['<s>']
-        eos_id = language_base.vocabulary['</s>']
-
         # Build decoder
-        logits, translations = self._build_decoder(
+        logits, self.translations = self._build_decoder(
             encoder_state, encoder_outputs, decoder_emb_inp,
-            language_base.embeddings, sos_id, eos_id, params)
+            language_base, params)
 
         if self.mode != tf.contrib.learn.ModeKeys.INFER:
 
@@ -148,52 +160,73 @@ class ChatModel(object):
 
         return update_step
 
-    def _build_decoder(self, encoder_state, encoder_outputs, decoder_emb_inp, embeddings, sos_id, eos_id, params):
+    def _build_decoder(self, encoder_state, encoder_outputs, decoder_emb_inp, language_base, params):
 
         attention_mechanism = self._luong_attention_mechanism(encoder_outputs, params)
 
-        decoder_cell = self._build_cell(params.num_decoder_units, params.num_layers)
-
-        decoder_cell = tf.contrib.seq2seq.AttentionWrapper(
-            decoder_cell, attention_mechanism,
+        self.decoder_cell = self._build_cell(params.num_decoder_units, params.num_layers)
+        self.decoder_cell = tf.contrib.seq2seq.AttentionWrapper(
+            self.decoder_cell, attention_mechanism,
             attention_layer_size=params.num_decoder_units)
 
-        decoder_initial_state = decoder_cell.zero_state(params.batch_size, tf.float32).clone(cell_state=encoder_state)
+        batch_size = params.batch_size
 
         if self.mode == tf.contrib.learn.ModeKeys.INFER:
 
-            maximum_iterations = tf.round(tf.reduce_max(self.encoder_input_lengths) * 2)
+            if params.beam_width > 0:
+                encoder_state = tf.contrib.seq2seq.tile_batch(
+                    encoder_state, multiplier=params.beam_width)
+                batch_size = params.batch_size * params.beam_width
 
-            # Helper
-            helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
-                embeddings,
-                tf.fill([params.batch_size], sos_id), eos_id)
+            self.decoder_initial_state = self.decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
 
-            # Decoder
-            decoder = tf.contrib.seq2seq.BasicDecoder(
-                decoder_cell, helper, decoder_initial_state,
-                output_layer=self.output_layer)
+            self.maximum_iterations = tf.round(tf.reduce_max(self.encoder_input_lengths) * 2)
+
+            tmp_embeddings = tf.identity(language_base.embeddings)
+            tmp_embeddings.set_shape([len(language_base.vocabulary), language_base.word_embedding_size])
+
+            # # Helper
+            # helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(
+            #     tmp_embeddings, tf.fill([params.batch_size], sos_id), eos_id)
+            #
+            # # Decoder
+            # decoder = tf.contrib.seq2seq.BasicDecoder(
+            #     decoder_cell, helper, decoder_initial_state,
+            #     output_layer=self.output_layer)
+
+            decoder = tf.contrib.seq2seq.BeamSearchDecoder(
+                cell=self.decoder_cell,
+                embedding=tmp_embeddings,
+                start_tokens=tf.fill([params.batch_size], language_base.sos_id),
+                end_token=language_base.eos_id,
+                initial_state=self.decoder_initial_state,
+                beam_width=params.beam_width,
+                output_layer=self.output_layer,
+                length_penalty_weight=params.length_penalty_weight)
 
             # Dynamic decoding
-            outputs, _ = tf.contrib.seq2seq.dynamic_decode(
-                decoder, maximum_iterations=maximum_iterations)
+            outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(
+                decoder, maximum_iterations=self.maximum_iterations, output_time_major=True)
 
             logits = None
-            sample_id = outputs.sample_id
+            sample_id = outputs.predicted_ids
+            sample_id = tf.transpose(sample_id, perm=[1, 2, 0])
 
         else:
+
+            decoder_initial_state = self.decoder_cell.zero_state(batch_size, tf.float32).clone(cell_state=encoder_state)
 
             helper = tf.contrib.seq2seq.TrainingHelper(
                 decoder_emb_inp, self.decoder_input_lengths,
                 time_major=True)
 
             decoder = tf.contrib.seq2seq.BasicDecoder(
-                decoder_cell, helper, decoder_initial_state)
+                self.decoder_cell, helper, decoder_initial_state)
 
-            outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder)
+            self.outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(decoder, output_time_major=True)
 
-            logits = self.output_layer(outputs.rnn_output)
-            sample_id = outputs.sample_id
+            logits = self.output_layer(self.outputs.rnn_output)
+            sample_id = self.outputs.sample_id
 
         return logits, sample_id
 
@@ -250,7 +283,8 @@ class ChatModel(object):
 
         if self.mode == tf.contrib.learn.ModeKeys.INFER:
             return {
-
+                self.encoder_inputs: data[0],
+                self.encoder_input_lengths: data[3]
             }
         else:
             return {
@@ -264,11 +298,64 @@ class ChatModel(object):
     def _luong_attention_mechanism(self, memory, params):
 
         # attention_states: [batch_size, max_time, num_units]
-        attention_states = tf.transpose(memory, [1, 0, 2])
+        memory = tf.transpose(memory, [1, 0, 2])
+        source_sequence_length = self.encoder_input_lengths
+
+        if self.mode == tf.contrib.learn.ModeKeys.INFER and params.beam_width > 0:
+            memory = tf.contrib.seq2seq.tile_batch(
+                memory, multiplier=params.beam_width)
+            source_sequence_length = tf.contrib.seq2seq.tile_batch(
+                source_sequence_length, multiplier=params.beam_width)
 
         # Create an attention mechanism
         attention_mechanism = tf.contrib.seq2seq.LuongAttention(
-            params.num_decoder_units, attention_states,
-            memory_sequence_length=self.encoder_input_lengths)
+            params.num_decoder_units, memory,
+            memory_sequence_length=source_sequence_length)
 
         return attention_mechanism
+
+    def _update_decoder(self, language_base, sess, params):
+
+        self.output_layer = layers_core.Dense(len(language_base.vocabulary), use_bias=False, name='output_projection')
+
+        if self.mode == tf.contrib.learn.ModeKeys.INFER:
+
+            tmp_embeddings = tf.identity(language_base.embeddings)
+            tmp_embeddings.set_shape([len(language_base.vocabulary), language_base.word_embedding_size])
+
+            decoder = tf.contrib.seq2seq.BeamSearchDecoder(
+                cell=self.decoder_cell,
+                embedding=tmp_embeddings,
+                start_tokens=tf.fill([params.batch_size], language_base.sos_id),
+                end_token=language_base.eos_id,
+                initial_state=self.decoder_initial_state,
+                beam_width=params.beam_width,
+                output_layer=self.output_layer,
+                length_penalty_weight=params.length_penalty_weight)
+
+            # Dynamic decoding
+            outputs, _, _ = tf.contrib.seq2seq.dynamic_decode(
+                decoder, maximum_iterations=self.maximum_iterations, output_time_major=True)
+
+            self.translations = outputs.predicted_ids
+            self.translations = tf.transpose(self.translations, perm=[1, 2, 0])
+
+        else:
+
+            logits = self.output_layer(self.outputs.rnn_output)
+            self.translations = self.outputs.sample_id
+
+            self.predict_count = tf.reduce_sum(self.decoder_input_lengths)
+            self.loss = self._compute_loss(logits, params)
+
+            trainable_variables = tf.trainable_variables()
+            gradients = tf.gradients(self.loss, trainable_variables)
+            clipped_gradients, _ = tf.clip_by_global_norm(gradients, params.max_gradient_norm)
+
+            self.update_step = self._build_optimizer(clipped_gradients, trainable_variables, params)
+
+        # sess.run(tf.variables_initializer([self.output_layer.kernel]))
+        # TODO: Fix the initialization
+        sess.run(tf.variables_initializer([x for x in tf.global_variables() if x not in [language_base.embeddings,
+                                                                                         language_base.nce_weights,
+                                                                                         language_base.nce_biases]]))

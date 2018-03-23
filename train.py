@@ -25,14 +25,16 @@ if __name__ == '__main__':
     ingestion_data = src_train + tgt_train
 
     # Initialize language base
-    language_base = LanguageBase(params.language_base_dir, session=session)
+    language_base = LanguageBase(params.language_base_dir)
 
     chatbot = Chatbot(params, language_base, session)
 
     session.run(tf.global_variables_initializer())
 
     # Ingest data into language base
-    language_base.ingest(ingestion_data, batch_size=50)
+    language_base.ingest(ingestion_data, session, batch_size=50)
+    chatbot.update_decoder(language_base, session)
+
 
     # Create data generator
     train_data_generator = data_utils.create_data_generator(src_train,
@@ -42,4 +44,4 @@ if __name__ == '__main__':
                                                             tgt_max_len=params.tgt_max_len,
                                                             language_base=language_base)
 
-    chatbot.train(train_data_generator, session)
+    chatbot.train(train_data_generator, language_base, session)
