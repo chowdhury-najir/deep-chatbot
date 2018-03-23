@@ -51,4 +51,4 @@ if __name__ == '__main__':
                                                             tgt_max_len=params.tgt_max_len,
                                                             language_base=language_base)
 
-    chatbot.train(train_data_generator, language_base, session)
+    chatbot.train(train_data_generator, language_base, './model', session)

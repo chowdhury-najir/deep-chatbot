@@ -1,6 +1,9 @@
 from tensorflow.python.layers import core as layers_core
+from nltk.translate.bleu_score import sentence_bleu
 import time
+import os
 import itertools
+import pickle
 import numpy as np
 import tensorflow as tf
 
@@ -22,50 +25,81 @@ class Chatbot(object):
         with tf.variable_scope('root', reuse=True):
             self.infer_model = ChatModel(params, tf.contrib.learn.ModeKeys.INFER, language_base, sess)
 
-    def train(self, train_data_generator, language_base, sess):
+    def train(self, train_data_generator, language_base, save_dir, sess):
 
         global_step = 0
         loss_track = []
 
-        # dev_ppl = self.eval_model.compute_perplexity(train_data_generator, self.params.batch_size, sess)
-        # test_ppl = self.eval_model.compute_perplexity(train_data_generator, self.params.batch_size, sess)
+        train_data_generator, first_dev_generator = itertools.tee(train_data_generator)
+        first_dev_ppl = self.eval_model.compute_perplexity(first_dev_generator, self.params.batch_size, sess)
+        train_data_generator, first_test_generator = itertools.tee(first_dev_generator)
+        first_test_ppl = self.eval_model.compute_perplexity(first_test_generator, self.params.batch_size, sess)
 
         print("# First evaluation, global step 0")
-        # print("  eval dev: perplexity {0:.2f}".format(dev_ppl))
-        # print("  eval test: perplexity {0:.2f}".format(test_ppl))
-
-        start_time = time.time()
+        print("  eval dev: perplexity {0:.2f}".format(first_dev_ppl))
+        print("  eval test: perplexity {0:.2f}".format(first_test_ppl))
 
         for i in range(self.params.n_epochs):
             print("# Start epoch {}, step {}".format(i+1, global_step))
             train_data_generator, epoch_train_generator = itertools.tee(train_data_generator)
             while True:
                 try:
+                    step_start_time = time.time()
                     batch_data = next(epoch_train_generator)
-                    _, loss = self.train_model.train(batch_data, sess)
+                    _, loss, predict_count = self.train_model.train(batch_data, sess)
                     global_step += self.params.batch_size
                     loss_track.append(loss)
+
                     if global_step % self.params.steps_per_log == 0:
-                        print('  epoch {0} step {1} loss {2:.2f} time {3:.2f}'.format(i+1, global_step, loss, time.time() - start_time))
+                        ppl = utils.safe_exp((loss * self.params.batch_size) / predict_count)
+                        print('  epoch {0} step {1} loss {2:.2f} step-time {3:.2f} ppl {4:.2f}'.format(
+                            i+1, global_step, loss, time.time() - step_start_time, ppl))
+
                     if global_step % self.params.steps_per_checkpoint == 0:
                         translations = self.infer_model.infer(batch_data, sess)
 
                         batched_encoder_inputs = data_utils.convert_to_batch_major(batch_data[0])
                         batched_decoder_outputs = data_utils.convert_to_batch_major(batch_data[2])
 
-                        src_text = data_utils.words_to_text([language_base.reversed_vocabulary[w] for w in batched_encoder_inputs[0]])
-                        tgt_text = data_utils.words_to_text([language_base.reversed_vocabulary[w] for w in batched_decoder_outputs[0]])
-                        predicted_text = data_utils.words_to_text([language_base.reversed_vocabulary[w] for w in translations[0][0][0]])
+                        src_words = data_utils.trim_words([language_base.reversed_vocabulary[w] for w in batched_encoder_inputs[0]])
+                        tgt_words = data_utils.trim_words([language_base.reversed_vocabulary[w] for w in batched_decoder_outputs[0]])
+                        predicted_words = data_utils.trim_words([language_base.reversed_vocabulary[w] for w in translations[0][0][0]])
 
-                        print("  checkpoint eval")
+                        src_text = data_utils.words_to_text(src_words)
+                        tgt_text = data_utils.words_to_text(tgt_words)
+                        predicted_text = data_utils.words_to_text(predicted_words)
+
+                        bleu = sentence_bleu([tgt_words], predicted_words)
+
+                        print("  CHECKPOINT EVAL, bleu: {0:.2f}".format(bleu))
                         print("    src:", src_text)
                         print("    tgt:", tgt_text)
                         print("    predicted:", predicted_text)
 
-                        self.saver.save(sess, './model')
+                        self.save(save_dir, sess)
 
                 except StopIteration:
                     break
+
+    def infer(self, inputs, sess):
+
+        pass
+
+    def save(self, directory, sess=None):
+
+        with open(os.path.join(directory, 'params'), 'wb') as pickle_file:
+            pickle.dump(self.params, pickle_file)
+
+        if sess is not None:
+            self.saver.save(sess, os.path.join(directory, 'model.ckpt'))
+
+    @classmethod
+    def load(cls, directory, language_base, session):
+
+        with open(os.path.join(directory, 'params'), 'rb') as pickle_file:
+            params = pickle.load(pickle_file)
+
+        return cls(params, language_base, session)
 
     def update_decoder(self, language_base, sess):
 
@@ -277,7 +311,7 @@ class ChatModel(object):
     def train(self, batch, sess):
 
         assert self.mode == tf.contrib.learn.ModeKeys.TRAIN
-        return sess.run([self.update_step, self.loss], feed_dict=self._get_feed_dict(batch))
+        return sess.run([self.update_step, self.loss, self.predict_count], feed_dict=self._get_feed_dict(batch))
 
     def infer(self, data, sess):
 

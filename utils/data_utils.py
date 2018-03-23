@@ -86,10 +86,15 @@ def convert_to_time_major(inputs, max_len):
     return inputs_time_major, input_seq_lengths
 
 
-def words_to_text(words):
+def trim_words(words):
 
     for i in range(len(words)):
         if words[i] == '</s>' or words[i] == '<pad>':
-            return ' '.join(words[:i])
+            return words[:i]
+
+    return words
+
+
+def words_to_text(words):
 
     return ' '.join(words)
