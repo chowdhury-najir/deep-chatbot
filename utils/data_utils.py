@@ -6,7 +6,7 @@ import itertools
 import numpy as np
 import tensorflow as tf
 
-import params
+from params import chat_params
 from . import utils
 
 
@@ -15,10 +15,10 @@ def load_data_from_file(file_prefix, max_data=None):
     src_data = []
     tgt_data = []
 
-    with open(os.path.join(params.data_dir, file_prefix + params.src_suffix), 'r') as f:
+    with open(os.path.join(chat_params['data_dir'], file_prefix + chat_params['src_suffix']), 'r') as f:
         src_lines = f.readlines()
 
-    with open(os.path.join(params.data_dir, file_prefix + params.tgt_suffix), 'r') as f:
+    with open(os.path.join(chat_params['data_dir'], file_prefix + chat_params['tgt_suffix']), 'r') as f:
         tgt_lines = f.readlines()
 
     if max_data is not None:

@@ -12,11 +12,9 @@ import numpy as np
 class LanguageBase(object):
 
     def __init__(self,
-                 directory,
                  word_embedding_size=300,
                  learning_rate=1.0):
 
-        self.directory = directory
         self.word_embedding_size = word_embedding_size
         self.learning_rate = learning_rate
 
@@ -76,19 +74,19 @@ class LanguageBase(object):
 
         sess.run([embeddings_op, nce_weights_op, nce_biases_op])
 
-    def __save_word_embeddings_metadata(self):
+    def __save_word_embeddings_metadata(self, directory):
 
-        with open(os.path.join(self.directory, 'metadata.tsv'), 'w') as f:
+        with open(os.path.join(directory, 'metadata.tsv'), 'w') as f:
             f.write('ID\tWord\n')
             for w in self.vocabulary:
                 f.write(str(self.vocabulary[w]) + '\t' + str(w) + '\n')
 
-    def __update_embedding_projector(self):
+    def __update_embedding_projector(self, directory):
 
-        self.__save_word_embeddings_metadata()
+        self.__save_word_embeddings_metadata(directory)
 
         # Use the same LOG_DIR where you stored your checkpoint.
-        summary_writer = tf.summary.FileWriter(self.directory)
+        summary_writer = tf.summary.FileWriter(directory)
 
         # Format: tensorflow/contrib/tensorboard/plugins/projector/projector_config.proto
         config = projector.ProjectorConfig()
@@ -130,9 +128,7 @@ class LanguageBase(object):
         return word_vectors
 
     @staticmethod
-    def load(directory, sess):
-
-        tf.reset_default_graph()
+    def load(directory):
 
         with open(os.path.join(directory, 'language_base_obj.pkl'), 'rb') as pickle_file:
             obj = pickle.load(pickle_file)
@@ -141,26 +137,17 @@ class LanguageBase(object):
         obj.nce_weights = tf.get_variable('nce_weights', shape=(len(obj.vocabulary), obj.word_embedding_size))
         obj.nce_biases = tf.get_variable('nce_biases', shape=(len(obj.vocabulary),))
 
-        saver = tf.train.Saver()
-        saver.restore(sess, os.path.join(directory, 'model.ckpt'))
-
         return obj
 
-    def __save_session(self, sess):
+    def save(self, directory):
 
-        saver = tf.train.Saver()
-        saver.save(sess, os.path.join(self.directory, 'model.ckpt'))
-
-    def save(self, sess):
-
-        self.__update_embedding_projector()
-        self.__save_session(sess)
+        self.__update_embedding_projector(directory)
 
         self.embeddings = None
         self.nce_weights = None
         self.nce_biases = None
 
-        with open(os.path.join(self.directory, 'language_base_obj.pkl'), 'wb') as pickle_file:
+        with open(os.path.join(directory, 'language_base_obj.pkl'), 'wb') as pickle_file:
             pickle.dump(self, pickle_file)
 
     def ingest(self,
@@ -227,26 +214,7 @@ class LanguageBase(object):
                 _, cur_loss = sess.run([optimizer, loss], feed_dict=feed_dict)
                 _loss = cur_loss
                 step += batch_size
-                if steps_per_projection_update is not None:
-                    for i in range(prev_step, step):
-                        if i % steps_per_projection_update == 0 and i != 0 or steps_per_projection_update == 1:
-                            self.__update_embedding_projector()
-                if steps_per_checkpoint is not None:
-                    for i in range(prev_step, step):
-                        if i % steps_per_checkpoint == 0 and i != 0:
-                            self.__save_session(sess)
-                            if verbose:
-                                print('step: {}, loss: {}, time: {}'.format(i, cur_loss, time.time() - start_time))
-                prev_step = step
 
-            self.__update_embedding_projector()
-            self.__save_session(sess)
+    def word_embeddings(self, sess):
 
-            if verbose:
-                print('end of epoch. step: {}, loss: {}, time: {}'.format(step, _loss, time.time() - start_time))
-
-        return True
-
-    def word_embeddings(self):
-
-        return self.embeddings.eval()
+        return self.embeddings.eval(session=sess)
