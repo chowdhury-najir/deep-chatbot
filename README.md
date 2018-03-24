@@ -4,21 +4,17 @@ This is my version of tensorflow's NMT (Neural Machine Translation) for chatbot 
 
 # Requirements
 
-<ul>
-  <li>tensorflow==1.4.1</li>
-  <li>nltk</li>
-  <li>numpy</li>
-  <li>sklearn</li>
-</ul>
+- tensorflow == 1.4.1
+- nltk
+- numpy
+- sklearn
 
 # Usage
 
-<ol>
-  <li>Clone the repository via `git clone https://github.com/noahchalifour/deep-chatbot`</li>
-  <li>Change into the directory `cd deep-chatbot`</li>
-  <li>Install the required packages `pip install -r requirements.txt`</li>
-  <li>(Optional) Replace data in the `data` directory with your own custom data</li>
-  <li>Create a model directory `mkdir model`</li>
-  <li>Tune your model via the `params.py` file</li>
-  <li>Once you are ready you can train your model via `python train.py`</li>
-</ol>
+1. Clone the repository via `git clone https://github.com/noahchalifour/deep-chatbot`
+2. Change into the directory `cd deep-chatbot`
+3. Install the required packages `pip install -r requirements.txt`
+4. (Optional) Replace data in the `data` directory with your own custom data
+5. Create a model directory `mkdir model`
+6. Tune your model via the `params.py` file
+7. Once you are ready you can train your model via `python train.py`
